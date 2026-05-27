@@ -1,180 +1,115 @@
-import { chromium } from "playwright-core";
-import Browserbase from "@browserbasehq/sdk";
 import KeywordTracking from "../models/keywordTracking.js";
 
-const bb = new Browserbase({
-  apiKey: process.env.BROWSERBASE_API_KEY,
-});
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
-// Search Google for a Keyword and extract ranking website for a target domain
 export async function rankTracker(keyword, targetDomain, trackingId) {
-  let browser;
-
   try {
-    // 1. Initialize Browserbase Session & connect playwright
-    const session = await bb.sessions.create({
-      browserSettings: { blockAds: true },
-    });
-
-    browser = await chromium.connectOverCDP(session.connectUrl);
-
-    const context = browser.contexts()[0] || await browser.newContext();
-    const page = context.pages()[0] || await context.newPage();
-
-    page.setDefaultNavigationTimeout(45000);
-
-    // 2. Initial Google Visit & Consent Handling
-    await page.goto("https://www.google.com", {
-      waitUntil: "networkidle",
-    });
-
-    try {
-      const btn = await page.$(
-        'button[id="L2AGLb"], form[action*="consent"] button'
-      );
-
-      if (btn) {
-        await btn.click();
-        await page.waitForTimeout(1500);
-      }
-    } catch {}
-
+    const cleanTarget = targetDomain.replace("www.", "").toLowerCase();
     let found = null;
     let allResults = [];
 
-    const cleanTarget = targetDomain.replace("www.", "").toLowerCase();
+    // SerpAPI se 5 pages tak check karo (10 results per page)
+    for (let page = 0; page < 5; page++) {
+      const params = new URLSearchParams({
+        engine: "google",
+        q: keyword,
+        start: String(page * 10),
+        num: "10",
+        hl: "en",
+        gl: "us",
+        api_key: SERPAPI_KEY,
+      });
 
-    // 3. Search Loop: Iterate through up to 5 pages
-    for (let gPage = 0; gPage < 5; gPage++) {
-      await page.goto(
-        `https://www.google.com/search?q=${encodeURIComponent(
-          keyword
-        )}&start=${gPage * 10}&num=10&hl=en&gl=us`,
-        { waitUntil: "networkidle" }
+      const response = await fetch(
+        `https://serpapi.com/search?${params.toString()}`
       );
 
-      let pageResults = [];
-
-      for (let retry = 0; retry < 3; retry++) {
-        try {
-          await page.waitForSelector("h3", { timeout: 8000 });
-          await page.waitForTimeout(1500);
-
-          pageResults = await page.evaluate(() =>
-            Array.from(document.querySelectorAll("h3"))
-              .map((h3) => {
-                let a = h3.closest("a");
-
-                if (!a) {
-                  let p = h3.parentElement;
-
-                  for (let j = 0; j < 5 && p; j++, p = p.parentElement) {
-                    if (p.tagName === "A") {
-                      a = p;
-                      break;
-                    }
-
-                    const sub = p.querySelector("a[href]");
-                    if (sub && sub.contains(h3)) {
-                      a = sub;
-                      break;
-                    }
-                  }
-                }
-
-                if (
-                  !a ||
-                  !a.href.startsWith("http") ||
-                  a.href.includes("google.")
-                )
-                  return null;
-
-                let s = "";
-                let c = a.parentElement;
-
-                for (let j = 0; j < 6 && c; j++, c = c.parentElement) {
-                  const txt = c.innerText || "";
-
-                  if (txt.length > h3.innerText.length + 50) {
-                    s =
-                      (
-                        txt
-                          .split("\n")
-                          .find(
-                            (l) =>
-                              l.length > 30 &&
-                              !l.includes(h3.innerText.substring(0, 20))
-                          ) || ""
-                      )
-                        .trim()
-                        .substring(0, 300);
-
-                    if (s) break;
-                  }
-                }
-
-                return {
-                  url: a.href,
-                  domain: new URL(a.href).hostname.replace("www.", ""),
-                  title: h3.innerText.trim(),
-                  snippet: s,
-                };
-              })
-              .filter(Boolean)
-          );
-
-          if (pageResults.length > 0) break;
-          await page.reload({ waitUntil: "networkidle" });
-        } catch {
-          await page.reload({ waitUntil: "networkidle" });
-        }
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || `SerpAPI error: ${response.status}`);
       }
 
-      if (!pageResults.length) break;
+      const data = await response.json();
+      const organicResults = data.organic_results || [];
 
-      for (const r of pageResults) {
-        r.position = allResults.length + 1;
-        allResults.push(r);
+      if (organicResults.length === 0) break;
 
+      for (const result of organicResults) {
+        const resultDomain = new URL(result.link).hostname
+          .replace("www.", "")
+          .toLowerCase();
+
+        const position = allResults.length + 1;
+
+        allResults.push({
+          position,
+          url: result.link,
+          domain: resultDomain,
+          title: result.title || "",
+          snippet: result.snippet || "",
+        });
+
+        // Target domain match check
         if (
           !found &&
-          (r.domain.toLowerCase().includes(cleanTarget) ||
-            cleanTarget.includes(r.domain.toLowerCase()))
+          (resultDomain.includes(cleanTarget) ||
+            cleanTarget.includes(resultDomain))
         ) {
-          found = { ...r, page: gPage + 1 };
+          found = {
+            position,
+            page: page + 1,
+            url: result.link,
+            domain: resultDomain,
+            title: result.title || "",
+            snippet: result.snippet || "",
+          };
         }
       }
 
+      // Mil gaya toh aage mat jao — API credits bachao
       if (found) break;
-
-      await page.waitForTimeout(2000 + Math.random() * 2000);
     }
 
-    await browser.close();
-
+    // Top 10 competitors (target domain ko exclude karo)
     const competitors = allResults
       .filter(
         (r) =>
-          !r.domain.toLowerCase().includes(cleanTarget) &&
-          !cleanTarget.includes(r.domain.toLowerCase())
+          !r.domain.includes(cleanTarget) && !cleanTarget.includes(r.domain)
       )
       .slice(0, 10);
 
-    // =========================
-    // ✅ ADDED FIX: DB UPDATE (IMPORTANT)
-    // =========================
+    // DB update
     if (trackingId) {
+      const existing = await KeywordTracking.findById(trackingId);
+      const prevBest = existing?.bestPosition || null;
+
+      // Best position update karo
+      let newBest = prevBest;
+      if (found?.position) {
+        newBest =
+          prevBest === null
+            ? found.position
+            : Math.min(prevBest, found.position);
+      }
+
+      // Position change calculate karo
+      const prevPosition = existing?.currentPosition || null;
+      const positionChange =
+        prevPosition && found?.position
+          ? prevPosition - found.position // positive = improved
+          : 0;
+
       await KeywordTracking.findByIdAndUpdate(trackingId, {
-        status: found ? "completed" : "failed",
+        status: found ? "completed" : "not_ranked",
         currentPosition: found?.position || null,
         currentPage: found?.page || null,
-        bestPosition: found?.position || null,
+        bestPosition: newBest,
+        positionChange,
         lastChecked: new Date(),
-        competitors: competitors || []
+        competitors,
       });
     }
 
-    // ✅ SUCCESS RESPONSE
     return {
       success: true,
       data: {
@@ -191,17 +126,10 @@ export async function rankTracker(keyword, targetDomain, trackingId) {
   } catch (error) {
     console.error("Rank check error:", error.message);
 
-    try {
-      await browser?.close();
-    } catch {}
-
-    // =========================
-    // ✅ ADDED FIX: SAFE FAILURE UPDATE
-    // =========================
     if (trackingId) {
       await KeywordTracking.findByIdAndUpdate(trackingId, {
         status: "failed",
-        lastChecked: new Date()
+        lastChecked: new Date(),
       });
     }
 
