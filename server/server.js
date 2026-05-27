@@ -12,11 +12,14 @@ connectDB();
 const app = express();
  
 app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "https://ai-saas-website-git-main-pawanproject21.vercel.app",
-    "https://ai-saas-website-pawanproject21.vercel.app",
-  ],
+  origin: function(origin, callback) {
+    // Allow all vercel.app domains + localhost
+    if (!origin || origin.includes('vercel.app') || origin.includes('localhost')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
  
