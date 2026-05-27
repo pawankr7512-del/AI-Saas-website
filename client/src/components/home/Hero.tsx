@@ -19,7 +19,7 @@ export default function Hero() {
                     <div className="absolute bg-blue-600 size-2 rounded-full animate-ping"></div>
                     <div className="bg-blue-600 size-1.5 rounded-full"></div>
                 </div>
-                Powered by BrowserBase & Gemini AI
+                Powered by SERP AI & Gemini AI
             </div>
             <h1 className="text-4xl sm:text-5xl md:text-6xl font-medium leading-tight mb-6 text-foreground">
                 Analyze & Boost Your <span className="gradient-text dm-serif">SEO Rankings</span>
